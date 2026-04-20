@@ -1,47 +1,46 @@
-# 建設BPM+MDM v2
+# 建設BPM+MDM v3
 
-建設業向けのマスタデータ管理（MDM）と工程管理（BPM）を統合したWebアプリケーション v2。
+建設業向けのマスタデータ管理（MDM）と工程管理（BPM）を統合したWebアプリケーション v3。
 議事録ベースのユースケースから設計された3階層マスタデータ構造（全社基幹→共通→ドメイン別）と、AIによるテーブル分析・統合機能、ReactFlowによるビジュアル工程管理を提供する。
 
-## v1からの主な変更点
+## v2からの主な変更点
 
-- **マスタデータの拡充**: 18テーブル → 19テーブル、96カラム → 104カラム
-- **リアルなシードデータ**: 全カラムに `sample_values` を設定（建設業の実データに基づく値）
-- **レコード充実**: 各テーブル4〜5件のシードレコード（合計77件）
-- **レイヤー構造の細分化**: 5ノード → 6ノード（サプライチェーン共通マスタを独立）
-- **ツリーUI**: レイヤー階層をChevronDown/Right展開のツリー形式で表示
-- **データ一覧のテーブルビュー**: 列=カラム・行=レコードの通常テーブル形式 + ID列 + 重複チェック列
-- **デプロイ先**: e2-demo-tokyo ワークスペース（`-p e2-demo-tokyo` プロファイル）
+- **データベースをLakeBase(PostgreSQL)に移行**: SQLiteからDatabricks LakeBase（PostgreSQL互換）に切り替え。永続的なクラウドDBにより、アプリ再起動後もデータが保持される
+- **AI重複チェック機能**: 単一テーブル内のレコード重複をAIが検出。フィールド単位の類似度比較、サイドバイサイドの比較モーダル、マニュアル編集、解決アクション（Aを残す/Bを残す/マージ/両方残す）を提供
+- **静的重複チェック列の廃止**: 複合キーベースの固定「重複チェック」列を削除し、AI判定に置き換え
+- **デプロイ先変更**: dbc-1b865228-e1e5ワークスペース（`lakebase-workspace`プロファイル）
 
 ## マスタデータ構造
 
 ```
 ▼ 全社共通基幹システム（会計/人事） [レイヤー1]
-   ├ 社員マスタ (6列)
-   ├ 取引先マスタ (6列)
-   ├ 勘定科目マスタ (4列)
-   └ 拠点マスタ (4列)
+   ├ 社員名簿マスタ①（人事部・正式台帳）(6列)
+   ├ 社員名簿マスタ②（日報管理システム）(6列)
+   ├ 社員名簿マスタ③（顔認証出勤管理）(6列)
+   ├ 取引先マスタ①（購買部）(6列)
+   ├ 取引先マスタ②（サプライチェーン管理）(6列)
+   └ 勘定科目マスタ（本社経理）(4列)
    ▼ 建築・土木共通マスタ [レイヤー2]
-      ├ 工事種別マスタ (6列)
-      ├ 資格マスタ (4列)
-      ├ 協力会社マスタ (5列)
-      └ 安全基準マスタ (4列)
+      ├ 協力会社マスタ①（建築部）(5列)
+      ├ 協力会社マスタ②（土木部）(5列)
+      ├ 工種マスタ（建築・土木共通）(5列)
+      └ 資格マスタ（建築・土木共通）(4列)
    ▼ サプライチェーン共通マスタ [レイヤー2]
-      ├ 倉庫マスタ (5列)
-      ├ 配送ルートマスタ (5列)
-      └ 点検項目マスタ (5列)
+      ├ 資材マスタ（全社共通品目）(6列)
+      └ 倉庫・配送ルートマスタ(5列)
    ▼ 建築事業ドメインマスタ [レイヤー3]
-      ├ 建築資材マスタ (7列)
-      └ 建築設備マスタ (5列)
+      ├ 建物用途マスタ（建築）(5列)
+      ├ 工程表マスタ①（建築工事）(6列)
+      └ 見積項目マスタ（建築）(6列)
    ▼ 土木事業ドメインマスタ [レイヤー3]
-      ├ 土木資材マスタ (7列)
-      └ 土木設備マスタ (6列)
+      ├ 土木用途マスタ（土木）(5列)
+      └ 工程表マスタ②（土木工事）(6列)
    ▼ 設備事業ドメインマスタ [レイヤー3]
-      ├ 設備機器マスタ (6列)
-      └ 資材発注マスタ (6列)
+      ├ 工程表マスタ③（設備工事）(6列)
+      └ 設備機器マスタ（設備）(6列)
 ```
 
-**合計**: 6レイヤーノード / 19マスタテーブル / 104カラム / 77シードレコード
+**合計**: 6レイヤーノード / 19マスタテーブル / 104カラム / 80シードレコード
 
 ## 技術スタック
 
@@ -53,6 +52,7 @@
 | Uvicorn | 0.30.6 | ASGIサーバー |
 | SQLAlchemy | 2.0.35 | ORM |
 | Pydantic | 2.9.2 | バリデーション |
+| psycopg2-binary | 2.9.10 | PostgreSQLドライバー |
 | aiofiles | 24.1.0 | 非同期ファイルI/O |
 
 ### フロントエンド
@@ -70,60 +70,62 @@
 
 | 項目 | 内容 |
 |------|------|
-| データベース | SQLite |
-| デプロイ先 | Databricks Apps (e2-demo-tokyo) |
+| データベース | Databricks LakeBase (PostgreSQL互換) |
+| フォールバックDB | SQLite（ローカル開発用） |
+| デプロイ先 | Databricks Apps (dbc-1b865228-e1e5) |
 | ホスティング | FastAPIによるSPA配信 + APIサーバー一体型 |
 
 ## システムアーキテクチャ
 
 ```
-┌─────────────────────────────────────────────────────┐
-│               Databricks Apps (e2-demo-tokyo)        │
-│                                                     │
-│  ┌───────────────────────────────────────────────┐  │
-│  │              Uvicorn (port 8000)               │  │
-│  │  ┌─────────────────────────────────────────┐  │  │
-│  │  │              FastAPI                     │  │  │
-│  │  │                                         │  │  │
-│  │  │  /api/*  ──→  APIエンドポイント群       │  │  │
-│  │  │  /assets/* ──→ 静的ファイル配信         │  │  │
-│  │  │  /*       ──→ SPA (index.html)          │  │  │
-│  │  │                                         │  │  │
-│  │  │  ┌─────────────┐  ┌──────────────────┐  │  │  │
-│  │  │  │ SQLAlchemy   │  │ AI Analysis     │  │  │  │
-│  │  │  │   ORM        │  │  Engine         │  │  │  │
-│  │  │  └──────┬───────┘  └──────────────────┘  │  │  │
-│  │  │         │                                │  │  │
-│  │  │  ┌──────▼───────┐                        │  │  │
-│  │  │  │   SQLite DB   │                        │  │  │
-│  │  │  └──────────────┘                        │  │  │
-│  │  └─────────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│          Databricks Apps (dbc-1b865228-e1e5)             │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │              Uvicorn (port 8000)                    │  │
+│  │  ┌──────────────────────────────────────────────┐  │  │
+│  │  │              FastAPI                          │  │  │
+│  │  │                                              │  │  │
+│  │  │  /api/*  ──→  APIエンドポイント群            │  │  │
+│  │  │  /assets/* ──→ 静的ファイル配信              │  │  │
+│  │  │  /*       ──→ SPA (index.html)               │  │  │
+│  │  │                                              │  │  │
+│  │  │  ┌─────────────┐  ┌──────────────────────┐  │  │  │
+│  │  │  │ SQLAlchemy   │  │ AI Analysis Engine  │  │  │  │
+│  │  │  │   ORM        │  │ (重複検出/統合分析)  │  │  │  │
+│  │  │  └──────┬───────┘  └──────────────────────┘  │  │  │
+│  │  │         │                                    │  │  │
+│  │  │  ┌──────▼────────────────────────────────┐   │  │  │
+│  │  │  │  Databricks LakeBase (PostgreSQL)     │   │  │  │
+│  │  │  │  ep-noisy-lab-d1uadqkd.database...    │   │  │  │
+│  │  │  └───────────────────────────────────────┘   │  │  │
+│  │  └──────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────┐
-│                   ブラウザ                            │
-│  ┌─────────────────────────────────────────────────┐│
-│  │  React SPA (Vite ビルド)                        ││
-│  │  ┌──────────┐ ┌──────────────┐ ┌────────────┐  ││
-│  │  │Dashboard │ │ MasterData   │ │   BPM      │  ││
-│  │  │  Page    │ │   Page       │ │   Page     │  ││
-│  │  └──────────┘ └──────────────┘ └────────────┘  ││
-│  └─────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      ブラウザ                              │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  React SPA (Vite ビルド)                            │  │
+│  │  ┌──────────┐ ┌──────────────┐ ┌────────────┐      │  │
+│  │  │Dashboard │ │ MasterData   │ │   BPM      │      │  │
+│  │  │  Page    │ │   Page       │ │   Page     │      │  │
+│  │  └──────────┘ └──────────────┘ └────────────┘      │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### ディレクトリ構成
 
 ```
-construction-bpm-mdm-v2/
+construction-bpm-mdm-v3/
 ├── backend/
 │   ├── __init__.py
 │   ├── main.py            # FastAPIアプリ & 全APIエンドポイント
 │   ├── models.py           # SQLAlchemy ORMモデル
 │   ├── schemas.py          # Pydanticスキーマ
-│   ├── database.py         # DB接続設定
-│   ├── ai_analysis.py      # AI分析エンジン
+│   ├── database.py         # DB接続設定（LakeBase/SQLite切替）
+│   ├── ai_analysis.py      # AI分析エンジン（重複検出・統合分析）
 │   └── seed.py             # 初期データ投入（リアルな建設業データ）
 ├── frontend/
 │   ├── src/
@@ -132,7 +134,7 @@ construction-bpm-mdm-v2/
 │   │   ├── index.css       # グローバルCSS
 │   │   └── pages/
 │   │       ├── DashboardPage.jsx    # ダッシュボード
-│   │       ├── MasterDataPage.jsx   # マスタデータ管理（ツリーUI）
+│   │       ├── MasterDataPage.jsx   # マスタデータ管理（ツリーUI + AI重複チェック）
 │   │       └── BPMPage.jsx          # 工程管理
 │   ├── package.json
 │   ├── vite.config.js
@@ -142,7 +144,7 @@ construction-bpm-mdm-v2/
 ├── static/                 # Viteビルド出力（デプロイ用）
 │   ├── index.html
 │   └── assets/
-├── app.yaml                # Databricks Appsデプロイ設定
+├── app.yaml                # Databricks Appsデプロイ設定 + DATABASE_URL
 ├── requirements.txt        # Python依存パッケージ
 ├── .gitignore
 └── .databricksignore       # Databricks sync除外設定
@@ -176,9 +178,9 @@ construction-bpm-mdm-v2/
                             │ master_table_id  │  │ master_table_id │
                             │ name             │  │ record_index    │
                             │ column_type      │  │ data (JSON)     │
-                            │ description      │  │ created_at      │
-                            │ is_required      │  └─────────────────┘
-                            │ source_object    │
+                            │ description      │  │ source_node_id  │
+                            │ is_required      │  │ created_at      │
+                            │ source_object    │  └─────────────────┘
                             │ source_field     │
                             │ sample_values    │
                             │ display_order    │
@@ -209,6 +211,7 @@ construction-bpm-mdm-v2/
            │                     │ duration_days      │
            │                     │ status             │
            │                     │ description        │
+           │                     │ master_table_id    │
            │                     │ created_at         │
            │                     │ updated_at         │
            │                     └────────────────────┘
@@ -243,6 +246,7 @@ construction-bpm-mdm-v2/
 | Project → ProcessNode | 1:N。プロジェクト内の工程ノード |
 | Project → ProcessEdge | 1:N。ノード間の接続 |
 | ProcessNode ↔ MasterColumn | M:N。工程とマスタカラムの紐付け |
+| ProcessNode → MasterTable | N:1。工程ノードとマスタテーブルの紐付け |
 
 ## デプロイ方法
 
@@ -250,13 +254,13 @@ construction-bpm-mdm-v2/
 
 - Python 3.10+
 - Node.js 18+
-- Databricks CLI（認証設定済み、`e2-demo-tokyo` プロファイル）
+- Databricks CLI（認証設定済み、`lakebase-workspace`プロファイル）
 
 ### 1. ローカル環境セットアップ
 
 ```bash
-git clone https://github.com/ytsuchiya-work/construction-bpm-mdm-v2.git
-cd construction-bpm-mdm-v2
+git clone https://github.com/ytsuchiya-work/construction-bpm-mdm-v3.git
+cd construction-bpm-mdm-v3
 
 python -m venv .venv
 source .venv/bin/activate
@@ -270,46 +274,42 @@ cd ..
 ### 2. ローカル開発サーバー起動
 
 ```bash
-# バックエンド（ターミナル1）
+# SQLiteモード（デフォルト）
 source .venv/bin/activate
 uvicorn backend.main:app --reload --port 8000
 
-# フロントエンド（ターミナル2）
-cd frontend
-npm run dev
+# LakeBase接続モード
+DATABASE_URL="postgresql+psycopg2://user:token@host/dbname?sslmode=require" \
+  uvicorn backend.main:app --reload --port 8000
 ```
 
-- フロントエンド開発サーバー: http://localhost:5173
 - APIサーバー: http://localhost:8000
+- フロントエンド開発サーバー: http://localhost:5173（`cd frontend && npm run dev`）
 - Viteの設定により `/api` リクエストはバックエンドに自動プロキシされる
 
 ### 3. Databricks Appsへのデプロイ
 
 ```bash
 # フロントエンドビルド（static/ ディレクトリに出力）
-cd frontend
-npm run build
-cd ..
+cd frontend && npm run build && cd ..
 
-# Databricks Appsの作成（初回のみ、e2-demo-tokyoプロファイル使用）
-databricks apps create construction-bpm-mdm \
-  --description "建設BPM+MDM v2: マスタデータ統合 & 工程管理" \
-  -p e2-demo-tokyo
+# Databricks Appsの作成（初回のみ）
+databricks apps create construction-bpm-mdm-v3 --profile lakebase-workspace
 
 # ファイルをWorkspaceに同期
-databricks sync . /Workspace/Users/<your-email>/construction-bpm-mdm \
-  --watch=false -p e2-demo-tokyo
+databricks sync . /Workspace/Users/<your-email>/construction-bpm-mdm-v3 \
+  --profile lakebase-workspace --watch=false
 
 # デプロイ
-databricks apps deploy construction-bpm-mdm \
-  --source-code-path /Workspace/Users/<your-email>/construction-bpm-mdm \
-  -p e2-demo-tokyo
+databricks apps deploy construction-bpm-mdm-v3 \
+  --source-code-path /Workspace/Users/<your-email>/construction-bpm-mdm-v3 \
+  --profile lakebase-workspace
 ```
 
 ### 4. デプロイ後の確認
 
 ```bash
-databricks apps get construction-bpm-mdm -p e2-demo-tokyo
+databricks apps get construction-bpm-mdm-v3 --profile lakebase-workspace
 ```
 
 ## アプリの使用方法
@@ -326,15 +326,28 @@ databricks apps get construction-bpm-mdm -p e2-demo-tokyo
   - **レイヤー1**（青）: 全社共通基幹システム（会計/人事）
   - **レイヤー2**（オレンジ）: 建築・土木共通マスタ / サプライチェーン共通マスタ
   - **レイヤー3**（赤）: 建築 / 土木 / 設備 ドメインマスタ
-- 各レイヤーの展開/折りたたみ（ChevronDown/Right）が可能
+- 各レイヤーの展開/折りたたみが可能
 - レイヤー配下のマスタテーブルを一覧表示
 - 検索ボックスでレイヤー名・テーブル名をフィルタリング
 
 #### テーブル閲覧（メインエリア）
 
 - テーブルをクリックすると詳細を表示
-- **データ一覧タブ**: レコードを通常のテーブル形式（列=カラム、行=レコード）で表示。先頭に `#`（ID）列と `重複チェック` 列があり、キーの一意性に基づいて「ユニーク」または「重複あり」を表示する。各テーブルには4〜5件のシードレコードが登録されている（全19テーブル合計77件）
+- **データ一覧タブ**: レコードを通常のテーブル形式で表示。各テーブルには4〜5件のシードレコードが登録されている
 - **カラム定義タブ**: カラム名・型・必須フラグ・ソース情報・サンプル値を表示。インライン編集に対応
+
+#### AI重複チェック
+
+1. テーブルを選択し「AI重複チェック」ボタンをクリック
+2. AIがテーブル内の全レコードペアを比較し、類似度が閾値以上のペアを検出
+3. モーダルで重複ペアをサイドバイサイド表示:
+   - 各フィールドの類似度（%表示 + カラーコード）
+   - 編集可能なテキスト入力でマニュアル修正
+4. 解決アクション:
+   - **Aを残す**: レコードAを（編集内容で）更新し、Bを削除
+   - **Bを残す**: レコードBを（編集内容で）更新し、Aを削除
+   - **マージして残す**: AとBの編集内容をマージしてAに保存、Bを削除
+   - **両方残す**: 何もせず次のペアへ
 
 #### AI分析（右パネル）
 
@@ -374,6 +387,7 @@ databricks apps get construction-bpm-mdm -p e2-demo-tokyo
 - パレットから「タスク」「マイルストーン」をキャンバスにドラッグ&ドロップで追加
 - ノードをクリックすると左パネルに詳細を表示:
   - 名前、工期（日数）、ステータスを編集
+  - マスタテーブルとの紐付け
   - マスタカラムとの紐付け（ツリーからチェックボックスで選択）
   - ノード削除
 - エッジをクリックすると接続情報を表示・削除可能
