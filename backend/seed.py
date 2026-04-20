@@ -169,7 +169,7 @@ def seed_data(db: Session):
     db.add(layer2_construction)
     db.flush()
 
-    _add_table(db, layer2_construction.id,
+    tbl_subcontractor = _add_table(db, layer2_construction.id,
         "協力会社マスタ①（建築部）",
         "建築部が管理する協力会社台帳。土木部とは別管理で、同じ会社が異なる情報で登録されている。",
         columns=[
@@ -323,7 +323,7 @@ def seed_data(db: Session):
         ],
     )
 
-    _add_table(db, layer3_architecture.id,
+    tbl_arch_process = _add_table(db, layer3_architecture.id,
         "工程表マスタ①（建築工事）",
         "建築工事の標準工程項目。現場所長ごとに書き方が異なり全現場を横串で見られない問題を解決。Excelから脱却し選択式にすることで全社集計を可能にする。",
         columns=[
@@ -442,7 +442,7 @@ def seed_data(db: Session):
         ],
     )
 
-    _add_table(db, layer3_equipment.id,
+    tbl_equipment = _add_table(db, layer3_equipment.id,
         "設備機器マスタ（設備）",
         "設備工事で使用する機器の標準台帳。型式・メーカー・設置場所を管理。",
         columns=[
@@ -487,9 +487,19 @@ def seed_data(db: Session):
         {"label": "竣工検査", "node_type": "milestone", "position_x": 1350, "position_y": 150, "duration_days": 5, "status": "未着手"},
     ]
 
+    node_table_links = {
+        0: tbl_subcontractor.id,
+        3: tbl_arch_process.id,
+        6: tbl_equipment.id,
+    }
+
     created_nodes = []
-    for nd in nodes_data:
-        node = ProcessNode(project_id=project.id, **nd)
+    for i, nd in enumerate(nodes_data):
+        node = ProcessNode(
+            project_id=project.id,
+            master_table_id=node_table_links.get(i),
+            **nd,
+        )
         db.add(node)
         db.flush()
         created_nodes.append(node)
@@ -509,5 +519,22 @@ def seed_data(db: Session):
             target_node_id=created_nodes[tgt_idx].id,
         )
         db.add(edge)
+
+    bpm_records = [
+        (tbl_subcontractor.id, created_nodes[0].id, {"会社名": "東京足場工業", "担当者名": "佐々木一郎", "連絡先": "03-6789-0123", "専門工種": "足場工事", "評価": "A"}),
+        (tbl_arch_process.id, created_nodes[3].id, {"工程コード": "AP-006", "工程名": "杭打ち工事", "フェーズ": "地下", "標準日数": 20, "前工程コード": "AP-001", "必要資格": "1級建築施工管理技士"}),
+        (tbl_equipment.id, created_nodes[6].id, {"機器コード": "EQ-011", "機器名称": "非常用発電機500KVA", "設備区分": "電気", "メーカー": "ヤンマー", "標準単価": 12000000, "耐用年数": 20}),
+    ]
+    for table_id, node_id, data in bpm_records:
+        idx = db.query(MasterRecord).filter(MasterRecord.master_table_id == table_id).count()
+        db.add(MasterRecord(
+            master_table_id=table_id,
+            record_index=idx,
+            data=json.dumps(data, ensure_ascii=False),
+            source_node_id=node_id,
+        ))
+        tbl = db.query(MasterTable).get(table_id)
+        if tbl:
+            tbl.record_count = idx + 1
 
     db.commit()

@@ -66,9 +66,11 @@ class MasterRecord(Base):
     master_table_id = Column(Integer, ForeignKey("master_tables.id", ondelete="CASCADE"), nullable=False)
     record_index = Column(Integer, default=0)
     data = Column(Text, default="{}")
+    source_node_id = Column(Integer, ForeignKey("process_nodes.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     master_table = relationship("MasterTable", back_populates="records")
+    source_node = relationship("ProcessNode", foreign_keys=[source_node_id])
 
 
 class Project(Base):
@@ -95,10 +97,12 @@ class ProcessNode(Base):
     duration_days = Column(Integer, default=1)
     status = Column(String(50), default="未着手")
     description = Column(Text, default="")
+    master_table_id = Column(Integer, ForeignKey("master_tables.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     project = relationship("Project", back_populates="nodes")
     master_columns = relationship("MasterColumn", secondary=node_master_columns, back_populates="nodes")
+    master_table = relationship("MasterTable", foreign_keys=[master_table_id])
 
 
 class ProcessEdge(Base):

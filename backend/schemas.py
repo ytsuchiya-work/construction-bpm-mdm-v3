@@ -47,6 +47,7 @@ class MasterRecordBase(BaseModel):
 class MasterRecordCreate(BaseModel):
     master_table_id: int
     data: dict = {}
+    source_node_id: Optional[int] = None
 
 
 class MasterRecordUpdate(BaseModel):
@@ -56,6 +57,7 @@ class MasterRecordUpdate(BaseModel):
 class MasterRecordResponse(MasterRecordBase):
     id: int
     master_table_id: int
+    source_node_id: Optional[int] = None
     created_at: datetime
 
     class Config:
@@ -129,6 +131,7 @@ class ProcessNodeBase(BaseModel):
 
 class ProcessNodeCreate(ProcessNodeBase):
     project_id: int
+    master_table_id: Optional[int] = None
 
 
 class ProcessNodeUpdate(BaseModel):
@@ -140,11 +143,25 @@ class ProcessNodeUpdate(BaseModel):
     status: Optional[str] = None
     description: Optional[str] = None
     master_column_ids: Optional[list[int]] = None
+    master_table_id: Optional[int] = None
+
+
+class MasterTableBrief(BaseModel):
+    id: int
+    name: str
+    description: str = ""
+    layer_node_id: int
+    columns: list[MasterColumnResponse] = []
+
+    class Config:
+        from_attributes = True
 
 
 class ProcessNodeResponse(ProcessNodeBase):
     id: int
     project_id: int
+    master_table_id: Optional[int] = None
+    master_table: Optional[MasterTableBrief] = None
     created_at: datetime
     updated_at: datetime
     master_columns: list[MasterColumnResponse] = []
@@ -280,3 +297,26 @@ class CreateIntegratedTableRequest(BaseModel):
     table_ids: list[int]
     layer_node_id: int
     name: str = ""
+
+
+class DuplicateCheckRequest(BaseModel):
+    table_id: int
+    threshold: float = 0.6
+
+
+class DuplicatePair(BaseModel):
+    record_a_id: int
+    record_b_id: int
+    record_a_index: int
+    record_b_index: int
+    record_a_data: dict
+    record_b_data: dict
+    overall_similarity: float
+    field_comparisons: list[RecordFieldComparison]
+
+
+class DuplicateCheckResponse(BaseModel):
+    table_id: int
+    table_name: str
+    total_records: int
+    duplicate_pairs: list[DuplicatePair]

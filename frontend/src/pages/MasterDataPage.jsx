@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  ChevronRight, ChevronDown, Plus, Trash2, Edit2, Check, X, Save,
+  ChevronRight, ChevronDown, ChevronLeft, Plus, Trash2, Edit2, Check, X, Save,
   Search, Clock, Database, Table2, Layers, Brain, ArrowRightLeft,
   AlertTriangle, Lightbulb, Loader2, Eye, BarChart3, ListChecks,
-  Merge, CheckCircle2, XCircle, MinusCircle,
+  Merge, CheckCircle2, XCircle, MinusCircle, GitMerge,
 } from 'lucide-react'
 
 const LAYER_COLORS = {
@@ -73,6 +73,13 @@ export default function MasterDataPage() {
   const [expandedMatch, setExpandedMatch] = useState(null)
   const [integrating, setIntegrating] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [dupLoading, setDupLoading] = useState(false)
+  const [dupResult, setDupResult] = useState(null)
+  const [dupModalOpen, setDupModalOpen] = useState(false)
+  const [dupCurrentIdx, setDupCurrentIdx] = useState(0)
+  const [dupEditA, setDupEditA] = useState({})
+  const [dupEditB, setDupEditB] = useState({})
+  const [dupResolving, setDupResolving] = useState(false)
 
   const loadLayers = useCallback(() => {
     fetch('/api/layers').then(r => r.json()).then(data => {
@@ -102,6 +109,8 @@ export default function MasterDataPage() {
     setEditingCol(null)
     setShowAddCol(false)
     setRightTab('data')
+    setDupResult(null)
+    setDupModalOpen(false)
   }
 
   const handleSelectLayer = (layerNode) => {
@@ -240,6 +249,93 @@ export default function MasterDataPage() {
     setShowAddModal(null)
     setNewItem({ name: '', description: '' })
     loadLayers()
+  }
+
+  const runDuplicateCheck = async () => {
+    if (!selectedTable) return
+    setDupLoading(true)
+    setDupResult(null)
+    try {
+      const resp = await fetch('/api/ai/check-duplicates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_id: selectedTable.id }),
+      })
+      const data = await resp.json()
+      setDupResult(data)
+      if (data.duplicate_pairs?.length > 0) {
+        setDupCurrentIdx(0)
+        setDupEditA({ ...data.duplicate_pairs[0].record_a_data })
+        setDupEditB({ ...data.duplicate_pairs[0].record_b_data })
+      }
+      setDupModalOpen(true)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setDupLoading(false)
+    }
+  }
+
+  const resolveDuplicate = async (action) => {
+    if (!dupResult || dupCurrentIdx >= dupResult.duplicate_pairs.length) return
+    const pair = dupResult.duplicate_pairs[dupCurrentIdx]
+    setDupResolving(true)
+    try {
+      if (action === 'keep_a') {
+        await fetch(`/api/records/${pair.record_a_id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: dupEditA }),
+        })
+        await fetch(`/api/records/${pair.record_b_id}`, { method: 'DELETE' })
+      } else if (action === 'keep_b') {
+        await fetch(`/api/records/${pair.record_b_id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: dupEditB }),
+        })
+        await fetch(`/api/records/${pair.record_a_id}`, { method: 'DELETE' })
+      } else if (action === 'merge') {
+        const merged = { ...dupEditA }
+        for (const [k, v] of Object.entries(dupEditB)) {
+          if (!merged[k] && v) merged[k] = v
+        }
+        await fetch(`/api/records/${pair.record_a_id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: merged }),
+        })
+        await fetch(`/api/records/${pair.record_b_id}`, { method: 'DELETE' })
+      }
+
+      const newPairs = dupResult.duplicate_pairs.filter((_, i) => i !== dupCurrentIdx)
+      setDupResult({ ...dupResult, duplicate_pairs: newPairs })
+
+      if (newPairs.length === 0) {
+        setDupModalOpen(false)
+        loadLayers()
+        const tablesResp = await fetch('/api/tables')
+        const tables = await tablesResp.json()
+        const updated = tables.find(t => t.id === selectedTable.id)
+        if (updated) setSelectedTable(updated)
+      } else {
+        const nextIdx = Math.min(dupCurrentIdx, newPairs.length - 1)
+        setDupCurrentIdx(nextIdx)
+        setDupEditA({ ...newPairs[nextIdx].record_a_data })
+        setDupEditB({ ...newPairs[nextIdx].record_b_data })
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setDupResolving(false)
+    }
+  }
+
+  const goToDupPair = (idx) => {
+    if (!dupResult || idx < 0 || idx >= dupResult.duplicate_pairs.length) return
+    setDupCurrentIdx(idx)
+    setDupEditA({ ...dupResult.duplicate_pairs[idx].record_a_data })
+    setDupEditB({ ...dupResult.duplicate_pairs[idx].record_b_data })
   }
 
   const getAllLayerNodes = (roots) => {
@@ -398,15 +494,6 @@ export default function MasterDataPage() {
       )
     }
 
-    const keyCol = columns.find(c => c.is_required) || columns[0]
-    const keyValues = records.map(r => r.parsedData[keyCol?.name])
-    const seen = {}
-    const duplicateKeys = new Set()
-    keyValues.forEach(v => {
-      if (seen[v]) duplicateKeys.add(v)
-      seen[v] = true
-    })
-
     return (
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-auto max-h-[500px]">
@@ -425,16 +512,13 @@ export default function MasterDataPage() {
                     </div>
                   </th>
                 ))}
-                <th className="text-center px-3 py-2.5 font-semibold text-gray-600 bg-gray-50 min-w-[110px] whitespace-nowrap">
-                  重複チェック
+                <th className="text-center px-3 py-2.5 font-semibold text-gray-600 bg-gray-50 min-w-[80px] whitespace-nowrap">
+                  登録元
                 </th>
               </tr>
             </thead>
             <tbody>
-              {records.map((r, idx) => {
-                const keyVal = r.parsedData[keyCol?.name]
-                const isDuplicate = duplicateKeys.has(keyVal)
-                return (
+              {records.map((r, idx) => (
                   <tr key={r.id || idx} className={`border-b border-gray-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'} hover:bg-blue-50/30`}>
                     <td className="px-3 py-2 text-center text-gray-400 font-mono text-xs bg-white sticky left-0 border-r border-gray-200">
                       {idx + 1}
@@ -448,19 +532,16 @@ export default function MasterDataPage() {
                       )
                     })}
                     <td className="px-3 py-2 text-center">
-                      {isDuplicate ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-50 text-red-600 rounded-full text-xs font-medium">
-                          <XCircle size={12} /> 重複あり
+                      {r.source_node_id ? (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-purple-50 text-purple-600 rounded-full text-[10px] font-medium border border-purple-200">
+                          BPM
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-xs font-medium">
-                          <CheckCircle2 size={12} /> ユニーク
-                        </span>
+                        <span className="text-gray-300 text-[10px]">—</span>
                       )}
                     </td>
                   </tr>
-                )
-              })}
+              ))}
             </tbody>
           </table>
         </div>
@@ -616,6 +697,16 @@ export default function MasterDataPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {rightTab === 'data' && (
+              <button
+                onClick={runDuplicateCheck}
+                disabled={dupLoading || !selectedTable?.records?.length}
+                className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 disabled:opacity-50"
+              >
+                {dupLoading ? <Loader2 size={14} className="animate-spin" /> : <Brain size={14} />}
+                {dupLoading ? '解析中...' : 'AI重複チェック'}
+              </button>
+            )}
             {rightTab === 'columns' && (
               <button
                 onClick={() => setShowAddCol(true)}
@@ -864,6 +955,140 @@ export default function MasterDataPage() {
             </div>
           )
         })}
+      </div>
+    )
+  }
+
+  const renderDuplicateModal = () => {
+    const pairs = dupResult?.duplicate_pairs || []
+    const pair = pairs[dupCurrentIdx]
+    const columns = selectedTable?.columns || []
+
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-purple-50 to-blue-50 rounded-t-2xl">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-100 rounded-lg">
+                <Brain size={18} className="text-purple-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-800">AI重複チェック結果</h3>
+                <p className="text-xs text-gray-500">{dupResult?.table_name} ({dupResult?.total_records}件中)</p>
+              </div>
+            </div>
+            {pairs.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button onClick={() => goToDupPair(dupCurrentIdx - 1)} disabled={dupCurrentIdx <= 0}
+                  className="p-1.5 rounded-lg hover:bg-white/80 disabled:opacity-30 text-gray-600"><ChevronLeft size={16} /></button>
+                <span className="text-sm font-medium text-gray-700 min-w-[60px] text-center">{dupCurrentIdx + 1} / {pairs.length} 件</span>
+                <button onClick={() => goToDupPair(dupCurrentIdx + 1)} disabled={dupCurrentIdx >= pairs.length - 1}
+                  className="p-1.5 rounded-lg hover:bg-white/80 disabled:opacity-30 text-gray-600"><ChevronRight size={16} /></button>
+              </div>
+            )}
+            <button onClick={() => setDupModalOpen(false)} className="p-2 hover:bg-white/80 rounded-lg text-gray-500">
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-auto p-6">
+            {pairs.length === 0 ? (
+              <div className="text-center py-16">
+                <CheckCircle2 size={48} className="mx-auto mb-4 text-green-400" />
+                <p className="text-lg font-semibold text-gray-700">重複レコードは検出されませんでした</p>
+                <p className="text-sm text-gray-500 mt-1">このテーブルの全レコードはユニークです</p>
+              </div>
+            ) : pair && (
+              <div>
+                <div className="flex items-center gap-3 mb-4 p-3 bg-gray-50 rounded-lg">
+                  <span className="text-sm font-medium text-gray-600">全体類似度:</span>
+                  <div className="flex items-center gap-2 flex-1">
+                    <div className="flex-1 h-2.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${pair.overall_similarity >= 0.8 ? 'bg-red-500' : pair.overall_similarity >= 0.6 ? 'bg-yellow-500' : 'bg-orange-500'}`}
+                        style={{ width: `${Math.round(pair.overall_similarity * 100)}%` }} />
+                    </div>
+                    <span className="text-sm font-bold text-gray-700 min-w-[45px]">{Math.round(pair.overall_similarity * 100)}%</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div className="border border-blue-200 rounded-xl overflow-hidden">
+                    <div className="bg-blue-50 px-4 py-2.5 border-b border-blue-200">
+                      <span className="text-sm font-bold text-blue-700">レコード A</span>
+                      <span className="text-xs text-blue-500 ml-2">#{pair.record_a_index + 1}</span>
+                    </div>
+                    <div className="p-3 space-y-2">
+                      {columns.map(col => {
+                        const fc = pair.field_comparisons?.find(f => f.source_column === col.name)
+                        const bgColor = fc ? (fc.similarity >= 0.95 ? 'bg-green-50' : fc.similarity >= 0.7 ? 'bg-yellow-50' : fc.similarity >= 0.4 ? 'bg-orange-50' : 'bg-red-50') : ''
+                        return (
+                          <div key={col.id} className={`rounded-lg px-3 py-2 ${bgColor}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-medium text-gray-500">{col.name}</span>
+                              {fc && <StatusIcon status={fc.status} />}
+                              {fc && <span className="text-[10px] text-gray-400">{Math.round(fc.similarity * 100)}%</span>}
+                            </div>
+                            <input
+                              value={dupEditA[col.name] ?? ''}
+                              onChange={e => setDupEditA(p => ({ ...p, [col.name]: e.target.value }))}
+                              className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="border border-purple-200 rounded-xl overflow-hidden">
+                    <div className="bg-purple-50 px-4 py-2.5 border-b border-purple-200">
+                      <span className="text-sm font-bold text-purple-700">レコード B</span>
+                      <span className="text-xs text-purple-500 ml-2">#{pair.record_b_index + 1}</span>
+                    </div>
+                    <div className="p-3 space-y-2">
+                      {columns.map(col => {
+                        const fc = pair.field_comparisons?.find(f => f.source_column === col.name)
+                        const bgColor = fc ? (fc.similarity >= 0.95 ? 'bg-green-50' : fc.similarity >= 0.7 ? 'bg-yellow-50' : fc.similarity >= 0.4 ? 'bg-orange-50' : 'bg-red-50') : ''
+                        return (
+                          <div key={col.id} className={`rounded-lg px-3 py-2 ${bgColor}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-medium text-gray-500">{col.name}</span>
+                              {fc && <StatusIcon status={fc.status} />}
+                              {fc && <span className="text-[10px] text-gray-400">{Math.round(fc.similarity * 100)}%</span>}
+                            </div>
+                            <input
+                              value={dupEditB[col.name] ?? ''}
+                              onChange={e => setDupEditB(p => ({ ...p, [col.name]: e.target.value }))}
+                              className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 bg-white"
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-gray-200">
+                  <button onClick={() => resolveDuplicate('keep_a')} disabled={dupResolving}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                    {dupResolving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Aを残す
+                  </button>
+                  <button onClick={() => resolveDuplicate('merge')} disabled={dupResolving}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 disabled:opacity-50">
+                    {dupResolving ? <Loader2 size={14} className="animate-spin" /> : <GitMerge size={14} />} マージして残す
+                  </button>
+                  <button onClick={() => resolveDuplicate('keep_both')} disabled={dupResolving}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 border border-gray-300 disabled:opacity-50">
+                    両方残す
+                  </button>
+                  <button onClick={() => resolveDuplicate('keep_b')} disabled={dupResolving}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50">
+                    {dupResolving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Bを残す
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     )
   }
@@ -1202,6 +1427,8 @@ export default function MasterDataPage() {
           </div>
         </div>
       )}
+
+      {dupModalOpen && renderDuplicateModal()}
     </div>
   )
 }

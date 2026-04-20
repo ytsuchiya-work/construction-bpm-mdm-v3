@@ -13,8 +13,8 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import {
-  X, Package, Link2, ChevronDown, ChevronRight,
-  ShieldCheck, Trash2, GripVertical, ArrowRight, Table2, Layers,
+  X, Link2, ChevronDown, ChevronRight, Database, Save, Plus,
+  Trash2, GripVertical, ArrowRight, Table2, Layers, CheckCircle2,
 } from 'lucide-react'
 
 const STATUS_COLORS = {
@@ -39,16 +39,11 @@ function CustomNode({ data }) {
           <span>{data.duration_days}日間</span>
           <span className={`px-1.5 py-0.5 rounded ${colors.bg} ${colors.text} font-medium`}>{data.status}</span>
         </div>
-        {data.master_columns?.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {data.master_columns.slice(0, 3).map(f => (
-              <span key={f.id} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-white/70 rounded text-xs text-gray-600 border border-gray-200">
-                <Table2 size={9} /> {f.name}
-              </span>
-            ))}
-            {data.master_columns.length > 3 && (
-              <span className="px-1.5 py-0.5 bg-white/70 rounded text-xs text-gray-400">+{data.master_columns.length - 3}</span>
-            )}
+        {data.master_table && (
+          <div className="mt-2">
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-100 rounded text-xs text-blue-700 border border-blue-200">
+              <Database size={9} /> {data.master_table.name}
+            </span>
           </div>
         )}
       </div>
@@ -76,6 +71,9 @@ export default function BPMPage() {
   const [masterExpanded, setMasterExpanded] = useState({})
   const [reactFlowInstance, setReactFlowInstance] = useState(null)
   const edgeUpdateSuccessful = useRef(true)
+  const [masterFormData, setMasterFormData] = useState({})
+  const [nodeRecords, setNodeRecords] = useState([])
+  const [savingRecord, setSavingRecord] = useState(false)
 
   const loadProjects = useCallback(() => {
     fetch('/api/projects').then(r => r.json()).then(data => {
@@ -87,13 +85,24 @@ export default function BPMPage() {
   useEffect(() => { loadProjects() }, [loadProjects])
   useEffect(() => { fetch('/api/layers').then(r => r.json()).then(setMasterData) }, [])
 
+  const buildNodeData = (n) => ({
+    label: n.label,
+    nodeType: n.node_type,
+    status: n.status,
+    duration_days: n.duration_days,
+    description: n.description,
+    master_columns: n.master_columns || [],
+    master_table: n.master_table || null,
+    master_table_id: n.master_table_id || null,
+  })
+
   useEffect(() => {
     if (!currentProject) return
     const flowNodes = currentProject.nodes.map(n => ({
       id: String(n.id),
       type: 'custom',
       position: { x: n.position_x, y: n.position_y },
-      data: { label: n.label, nodeType: n.node_type, status: n.status, duration_days: n.duration_days, description: n.description, master_columns: n.master_columns },
+      data: buildNodeData(n),
     }))
     const flowEdges = currentProject.edges.map(e => ({
       id: String(e.id),
@@ -108,6 +117,14 @@ export default function BPMPage() {
     setNodes(flowNodes)
     setEdges(flowEdges)
   }, [currentProject, setNodes, setEdges])
+
+  const loadNodeRecords = async (nodeId) => {
+    const resp = await fetch(`/api/nodes/${nodeId}/records`)
+    if (resp.ok) {
+      const data = await resp.json()
+      setNodeRecords(data)
+    }
+  }
 
   const onConnect = useCallback(async (params) => {
     if (!currentProject) return
@@ -157,6 +174,12 @@ export default function BPMPage() {
   const onNodeClick = useCallback((_event, node) => {
     setSelectedNode(node)
     setSelectedEdge(null)
+    setMasterFormData({})
+    if (node.data.master_table_id) {
+      loadNodeRecords(parseInt(node.id))
+    } else {
+      setNodeRecords([])
+    }
   }, [])
 
   const onEdgeClick = useCallback((_event, edge) => {
@@ -198,7 +221,7 @@ export default function BPMPage() {
       body: JSON.stringify({ project_id: currentProject.id, label: type === 'milestone' ? '新マイルストーン' : '新タスク', node_type: type, position_x: position.x, position_y: position.y, duration_days: type === 'milestone' ? 1 : 7 }),
     })
     const newNode = await resp.json()
-    setNodes(nds => [...nds, { id: String(newNode.id), type: 'custom', position: { x: newNode.position_x, y: newNode.position_y }, data: { label: newNode.label, nodeType: newNode.node_type, status: newNode.status, duration_days: newNode.duration_days, description: newNode.description, master_columns: [] } }])
+    setNodes(nds => [...nds, { id: String(newNode.id), type: 'custom', position: { x: newNode.position_x, y: newNode.position_y }, data: buildNodeData(newNode) }])
   }, [currentProject, reactFlowInstance, setNodes])
 
   const updateSelectedNode = async (updates) => {
@@ -209,7 +232,7 @@ export default function BPMPage() {
       body: JSON.stringify(updates),
     })
     const updated = await resp.json()
-    const newData = { label: updated.label, nodeType: updated.node_type, status: updated.status, duration_days: updated.duration_days, description: updated.description, master_columns: updated.master_columns || [] }
+    const newData = buildNodeData(updated)
     setNodes(nds => nds.map(n => n.id === String(updated.id) ? { ...n, data: newData } : n))
     setSelectedNode(prev => ({ ...prev, data: newData }))
   }
@@ -222,11 +245,38 @@ export default function BPMPage() {
     setSelectedNode(null)
   }
 
-  const toggleMasterColumn = async (colId) => {
-    if (!selectedNode) return
-    const currentIds = (selectedNode.data.master_columns || []).map(c => c.id)
-    const newIds = currentIds.includes(colId) ? currentIds.filter(id => id !== colId) : [...currentIds, colId]
-    await updateSelectedNode({ master_column_ids: newIds })
+  const selectMasterTable = async (tableId) => {
+    await updateSelectedNode({ master_table_id: tableId })
+    setMasterFormData({})
+    loadNodeRecords(parseInt(selectedNode.id))
+  }
+
+  const unlinkMasterTable = async () => {
+    await updateSelectedNode({ master_table_id: 0 })
+    setMasterFormData({})
+    setNodeRecords([])
+  }
+
+  const saveRecordToMaster = async () => {
+    if (!selectedNode?.data?.master_table) return
+    setSavingRecord(true)
+    try {
+      const resp = await fetch('/api/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          master_table_id: selectedNode.data.master_table.id,
+          data: masterFormData,
+          source_node_id: parseInt(selectedNode.id),
+        }),
+      })
+      if (resp.ok) {
+        setMasterFormData({})
+        loadNodeRecords(parseInt(selectedNode.id))
+      }
+    } finally {
+      setSavingRecord(false)
+    }
   }
 
   const onDragStart = (event, nodeType) => {
@@ -239,8 +289,9 @@ export default function BPMPage() {
     return n?.data?.label || nodeId
   }
 
-  const renderMasterTree = (layers) => {
+  const renderMasterTableSelector = (layers) => {
     if (!layers || layers.length === 0) return null
+    const linkedTableId = selectedNode?.data?.master_table_id
     return layers.map(layer => (
       <div key={layer.id}>
         <div className="flex items-center gap-1 cursor-pointer text-gray-600 hover:text-gray-800 py-0.5 font-medium"
@@ -251,34 +302,115 @@ export default function BPMPage() {
         </div>
         {masterExpanded[`l${layer.id}`] && (
           <div className="ml-3">
-            {layer.master_tables?.map(table => (
-              <div key={table.id}>
-                <div className="flex items-center gap-1 cursor-pointer text-gray-500 hover:text-gray-700 py-0.5"
-                  onClick={() => setMasterExpanded(p => ({ ...p, [`t${table.id}`]: !p[`t${table.id}`] }))}>
-                  {masterExpanded[`t${table.id}`] ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-                  <Table2 size={10} />
-                  <span className="text-xs">{table.name}</span>
-                  <span className="text-gray-400 ml-1 text-[10px]">({table.columns?.length || 0}列)</span>
+            {layer.master_tables?.map(table => {
+              const isLinked = linkedTableId === table.id
+              return (
+                <div key={table.id}
+                  className={`flex items-center gap-1.5 py-1 px-1.5 rounded cursor-pointer text-xs transition-colors ${isLinked ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:bg-gray-50'}`}
+                  onClick={() => !isLinked && selectMasterTable(table.id)}>
+                  <Database size={10} />
+                  <span className="truncate">{table.name}</span>
+                  {isLinked && <CheckCircle2 size={10} className="text-blue-500 ml-auto flex-shrink-0" />}
                 </div>
-                {masterExpanded[`t${table.id}`] && table.columns?.map(col => {
-                  const linked = (selectedNode.data.master_columns || []).some(c => c.id === col.id)
-                  return (
-                    <div key={col.id}
-                      className={`ml-5 flex items-center gap-1.5 py-0.5 cursor-pointer rounded px-1 text-xs ${linked ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50'}`}
-                      onClick={() => toggleMasterColumn(col.id)}>
-                      <input type="checkbox" checked={linked} readOnly className="rounded text-blue-600" />
-                      <span>{col.name}</span>
-                      <span className="text-gray-400 text-[10px]">{col.column_type}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-            {renderMasterTree(layer.children)}
+              )
+            })}
+            {renderMasterTableSelector(layer.children)}
           </div>
         )}
       </div>
     ))
+  }
+
+  const renderColumnInput = (col) => {
+    const value = masterFormData[col.name] ?? ''
+    const baseClass = "w-full border border-gray-300 rounded px-2 py-1 text-xs focus:border-blue-400 focus:ring-1 focus:ring-blue-200 outline-none"
+    const onChange = (v) => setMasterFormData(p => ({ ...p, [col.name]: v }))
+
+    if (col.column_type === 'Integer') {
+      return <input type="number" value={value} onChange={e => onChange(e.target.value === '' ? '' : parseInt(e.target.value))} className={baseClass} />
+    }
+    if (col.column_type === 'Float') {
+      return <input type="number" step="0.01" value={value} onChange={e => onChange(e.target.value === '' ? '' : parseFloat(e.target.value))} className={baseClass} />
+    }
+    if (col.column_type === 'Date') {
+      return <input type="date" value={value} onChange={e => onChange(e.target.value)} className={baseClass} />
+    }
+    if (col.column_type === 'Boolean') {
+      return (
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          <input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} className="rounded text-blue-600" />
+          {value ? 'はい' : 'いいえ'}
+        </label>
+      )
+    }
+    if (col.column_type === 'Picklist' && col.sample_values) {
+      const options = col.sample_values.split(',').map(s => s.trim()).filter(Boolean)
+      return (
+        <select value={value} onChange={e => onChange(e.target.value)} className={baseClass}>
+          <option value="">-- 選択 --</option>
+          {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      )
+    }
+    if (col.column_type === 'Text') {
+      return <textarea value={value} onChange={e => onChange(e.target.value)} className={`${baseClass} min-h-[60px]`} />
+    }
+    return <input type="text" value={value} onChange={e => onChange(e.target.value)} className={baseClass} placeholder={col.sample_values ? col.sample_values.split(',')[0]?.trim() : ''} />
+  }
+
+  const renderMasterDataForm = () => {
+    const table = selectedNode?.data?.master_table
+    if (!table) return null
+    const columns = table.columns || []
+
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Database size={12} className="text-blue-600" />
+            <span className="text-xs font-medium text-blue-700">{table.name}</span>
+          </div>
+          <button onClick={unlinkMasterTable} className="text-[10px] text-gray-400 hover:text-red-500">リンク解除</button>
+        </div>
+
+        <div className="bg-blue-50/50 rounded-lg border border-blue-100 p-2.5 space-y-2">
+          <p className="text-[10px] text-blue-600 font-medium flex items-center gap-1"><Plus size={10} /> 新規レコード登録</p>
+          {columns.map(col => (
+            <div key={col.id}>
+              <label className="text-[10px] text-gray-500 mb-0.5 block">
+                {col.name}
+                {col.is_required && <span className="text-red-500 ml-0.5">*</span>}
+                <span className="text-gray-300 ml-1">{col.column_type}</span>
+              </label>
+              {renderColumnInput(col)}
+            </div>
+          ))}
+          <button
+            onClick={saveRecordToMaster}
+            disabled={savingRecord}
+            className="flex items-center justify-center gap-1 w-full px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-xs font-medium">
+            <Save size={12} /> {savingRecord ? '登録中...' : 'マスタに登録'}
+          </button>
+        </div>
+
+        {nodeRecords.length > 0 && (
+          <div>
+            <p className="text-[10px] text-gray-500 mb-1">このノードから登録済み ({nodeRecords.length}件)</p>
+            <div className="space-y-1 max-h-32 overflow-auto">
+              {nodeRecords.map((rec, idx) => {
+                const d = typeof rec.data === 'string' ? JSON.parse(rec.data) : rec.data
+                const preview = Object.values(d).slice(0, 2).join(' / ')
+                return (
+                  <div key={rec.id || idx} className="text-[10px] bg-gray-50 rounded px-2 py-1 text-gray-600 border border-gray-100 truncate">
+                    #{idx + 1} {preview}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    )
   }
 
   const renderSidebarContent = () => {
@@ -348,13 +480,20 @@ export default function BPMPage() {
               </select>
             </div>
 
-            <div>
-              <label className="block text-gray-500 mb-2 flex items-center gap-1"><Link2 size={12} /> マスタカラム選択</label>
-              <p className="text-gray-400 mb-1">テーブルのカラムを選択</p>
-              <div className="space-y-1 max-h-64 overflow-auto border border-gray-200 rounded p-2">
-                {renderMasterTree(masterData)}
+            {selectedNode.data.master_table ? (
+              <div>
+                <label className="block text-gray-500 mb-2 flex items-center gap-1"><Link2 size={12} /> マスタデータ入力</label>
+                {renderMasterDataForm()}
               </div>
-            </div>
+            ) : (
+              <div>
+                <label className="block text-gray-500 mb-2 flex items-center gap-1"><Link2 size={12} /> マスタテーブル選択</label>
+                <p className="text-gray-400 mb-1">紐付けるマスタテーブルを選択</p>
+                <div className="space-y-1 max-h-64 overflow-auto border border-gray-200 rounded p-2">
+                  {renderMasterTableSelector(masterData)}
+                </div>
+              </div>
+            )}
 
             <button onClick={deleteSelectedNode}
               className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-xs w-full justify-center">

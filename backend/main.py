@@ -18,9 +18,10 @@ from backend.schemas import (
     ProcessEdgeCreate, ProcessEdgeUpdate, ProcessEdgeResponse,
     DashboardStats, AIAnalysisRequest, AIAnalysisResponse,
     CreateIntegratedTableRequest,
+    DuplicateCheckRequest, DuplicateCheckResponse,
 )
 from backend.seed import seed_data
-from backend.ai_analysis import analyze_column_mappings, detect_variations, suggest_integration, match_records_across_tables
+from backend.ai_analysis import analyze_column_mappings, detect_variations, suggest_integration, match_records_across_tables, check_duplicates_within_table
 
 
 @asynccontextmanager
@@ -235,8 +236,12 @@ def create_record(data: MasterRecordCreate, db: Session = Depends(get_db)):
         master_table_id=data.master_table_id,
         record_index=max_idx,
         data=json.dumps(data.data, ensure_ascii=False),
+        source_node_id=data.source_node_id,
     )
     db.add(record)
+    table = db.query(MasterTable).get(data.master_table_id)
+    if table:
+        table.record_count = max_idx + 1
     db.commit()
     db.refresh(record)
     return record
@@ -289,6 +294,25 @@ def ai_analyze(req: AIAnalysisRequest, db: Session = Depends(get_db)):
         variations=variations,
         integration_suggestions=suggestions,
         record_matches=record_matches,
+    )
+
+
+@app.post("/api/ai/check-duplicates", response_model=DuplicateCheckResponse)
+def ai_check_duplicates(req: DuplicateCheckRequest, db: Session = Depends(get_db)):
+    table = (
+        db.query(MasterTable)
+        .options(joinedload(MasterTable.columns), joinedload(MasterTable.records))
+        .filter(MasterTable.id == req.table_id)
+        .first()
+    )
+    if not table:
+        raise HTTPException(404, "Table not found")
+    pairs = check_duplicates_within_table(table, req.threshold)
+    return DuplicateCheckResponse(
+        table_id=table.id,
+        table_name=table.name,
+        total_records=len(table.records),
+        duplicate_pairs=pairs,
     )
 
 
@@ -405,6 +429,7 @@ def list_projects(db: Session = Depends(get_db)):
         db.query(Project)
         .options(
             joinedload(Project.nodes).joinedload(ProcessNode.master_columns),
+            joinedload(Project.nodes).joinedload(ProcessNode.master_table).joinedload(MasterTable.columns),
             joinedload(Project.edges),
         )
         .all()
@@ -417,6 +442,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
         db.query(Project)
         .options(
             joinedload(Project.nodes).joinedload(ProcessNode.master_columns),
+            joinedload(Project.nodes).joinedload(ProcessNode.master_table).joinedload(MasterTable.columns),
             joinedload(Project.edges),
         )
         .filter(Project.id == project_id)
@@ -461,19 +487,36 @@ def create_node(data: ProcessNodeCreate, db: Session = Depends(get_db)):
 
 @app.put("/api/nodes/{node_id}", response_model=ProcessNodeResponse)
 def update_node(node_id: int, data: ProcessNodeUpdate, db: Session = Depends(get_db)):
-    node = db.query(ProcessNode).options(joinedload(ProcessNode.master_columns)).get(node_id)
+    node = db.query(ProcessNode).options(
+        joinedload(ProcessNode.master_columns),
+        joinedload(ProcessNode.master_table).joinedload(MasterTable.columns),
+    ).get(node_id)
     if not node:
         raise HTTPException(404, "Node not found")
     update_data = data.model_dump(exclude_unset=True)
     master_column_ids = update_data.pop("master_column_ids", None)
+    master_table_id = update_data.pop("master_table_id", None)
     for k, v in update_data.items():
         setattr(node, k, v)
     if master_column_ids is not None:
         cols = db.query(MasterColumn).filter(MasterColumn.id.in_(master_column_ids)).all()
         node.master_columns = cols
+    if master_table_id is not None:
+        if master_table_id == 0:
+            node.master_table_id = None
+        else:
+            node.master_table_id = master_table_id
     db.commit()
-    db.refresh(node)
+    node = db.query(ProcessNode).options(
+        joinedload(ProcessNode.master_columns),
+        joinedload(ProcessNode.master_table).joinedload(MasterTable.columns),
+    ).get(node_id)
     return node
+
+
+@app.get("/api/nodes/{node_id}/records", response_model=list[MasterRecordResponse])
+def list_node_records(node_id: int, db: Session = Depends(get_db)):
+    return db.query(MasterRecord).filter(MasterRecord.source_node_id == node_id).order_by(MasterRecord.record_index).all()
 
 
 @app.delete("/api/nodes/{node_id}")

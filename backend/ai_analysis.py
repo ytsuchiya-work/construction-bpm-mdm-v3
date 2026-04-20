@@ -1,4 +1,5 @@
 import difflib
+import itertools
 import json
 import re
 from backend.models import MasterTable, MasterColumn
@@ -253,6 +254,60 @@ def match_records_across_tables(
 
     results.sort(key=lambda x: -x.similarity)
     return results[:30]
+
+
+def check_duplicates_within_table(table: MasterTable, threshold: float = 0.6) -> list[dict]:
+    columns = [c.name for c in table.columns]
+    records = []
+    for r in table.records:
+        data = json.loads(r.data) if isinstance(r.data, str) else r.data
+        records.append((r, data))
+
+    pairs = []
+    for (ra, da), (rb, db) in itertools.combinations(records, 2):
+        comparisons = []
+        sims = []
+        for col in columns:
+            va = str(da.get(col, ""))
+            vb = str(db.get(col, ""))
+            if not va and not vb:
+                sim = 1.0
+            elif not va or not vb:
+                sim = 0.0
+            else:
+                sim = _value_similarity(va, vb)
+            sims.append(sim)
+
+            if sim >= 0.95:
+                status = "一致"
+            elif sim >= 0.7:
+                status = "近似"
+            elif sim >= 0.4:
+                status = "類似"
+            else:
+                status = "不一致"
+
+            comparisons.append(RecordFieldComparison(
+                source_column=col, target_column=col,
+                source_value=va, target_value=vb,
+                similarity=round(sim, 2), status=status,
+            ))
+
+        avg_sim = sum(sims) / len(sims) if sims else 0
+        if avg_sim >= threshold:
+            pairs.append({
+                "record_a_id": ra.id,
+                "record_b_id": rb.id,
+                "record_a_index": ra.record_index,
+                "record_b_index": rb.record_index,
+                "record_a_data": da,
+                "record_b_data": db,
+                "overall_similarity": round(avg_sim, 2),
+                "field_comparisons": comparisons,
+            })
+
+    pairs.sort(key=lambda x: -x["overall_similarity"])
+    return pairs[:50]
 
 
 def suggest_integration(tables: list[MasterTable], mappings: list[AIColumnMapping], variations: list[AIVariation]) -> list[AIIntegrationSuggestion]:
